@@ -25,7 +25,8 @@
     "socket.io-client": "^4.7.2",
     "styled-components": "^6.0.0",
     "three": "^0.180.0",
-    "three-mesh-bvh": "^0.9.1"
+    "three-mesh-bvh": "^0.9.1",
+    "web-vitals": "^5.1.0"
   },
   "scripts": {
     "start": "react-scripts start",

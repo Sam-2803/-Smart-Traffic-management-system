@@ -29,7 +29,9 @@ import {
 } from 'lucide-react';
 
 // 3D Car component
-function Car3D({ position, color = 'red', rotation = 0 }) {
+function Car3D({ position, priority = 0, rotation = 0 }) {
+  // Map priority -> color: 0=blue (regular), 1=yellow (public), 2=red (emergency)
+  const color = priority === 2 ? 'red' : priority === 1 ? 'yellow' : 'blue';
   return (
     <mesh position={position} rotation={[0, rotation, 0]}>
       <boxGeometry args={[0.8, 0.3, 0.4]} />
@@ -82,7 +84,7 @@ function Road({ start, end, width = 1 }) {
 }
 
 // Main Simulation Scene
-function SimulationScene({ cars, trafficLights, isRunning, settings }) {
+function SimulationScene({ cars, trafficLights, isRunning }) {
   return (
     <>
       <ambientLight intensity={0.6} />
@@ -108,7 +110,7 @@ function SimulationScene({ cars, trafficLights, isRunning, settings }) {
         <Car3D
           key={index}
           position={car.position}
-          color={car.color}
+          priority={car.priority}
           rotation={car.rotation}
         />
       ))}
@@ -133,7 +135,6 @@ const Simulation = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [simulationSpeed, setSimulationSpeed] = useState(1);
   const [carDensity, setCarDensity] = useState(5);
-  const [smartMode, setSmartMode] = useState(true);
   const [scenario, setScenario] = useState(CONTROLLER_TYPES.HYBRID_AI);
   const [simulationTime, setSimulationTime] = useState(0);
   const intervalRef = useRef();
@@ -142,10 +143,11 @@ const Simulation = () => {
 
   // Simulation state
   const [cars, setCars] = useState([
-    { position: [-5, 0, 0], color: 'red', rotation: 0, speed: 0.1 },
-    { position: [3, 0, 0.5], color: 'blue', rotation: 0, speed: 0.08 },
-    { position: [0, 0, -4], color: 'green', rotation: Math.PI/2, speed: 0.12 },
-    { position: [0.5, 0, 6], color: 'yellow', rotation: -Math.PI/2, speed: 0.09 }
+    // priority: 0=regular, 1=public transport, 2=emergency
+    { position: [-5, 0, 0], priority: 2, rotation: 0, speed: 0.1 },
+    { position: [3, 0, 0.5], priority: 1, rotation: 0, speed: 0.08 },
+    { position: [0, 0, -4], priority: 0, rotation: Math.PI/2, speed: 0.12 },
+    { position: [0.5, 0, 6], priority: 0, rotation: -Math.PI/2, speed: 0.09 }
   ]);
 
   const [trafficLights, setTrafficLights] = useState([
@@ -170,20 +172,92 @@ const Simulation = () => {
         
         // Update car positions
         setCars(prevCars => 
-          prevCars.map(car => {
+          prevCars.map((car, carIndex) => {
             const newPosition = [...car.position];
             const direction = car.rotation;
             
-            // Simple movement logic
-            if (direction === 0) { // Moving right
-              newPosition[0] += car.speed * simulationSpeed;
-              if (newPosition[0] > 10) newPosition[0] = -10;
-            } else if (direction === Math.PI/2) { // Moving up
-              newPosition[2] += car.speed * simulationSpeed;
-              if (newPosition[2] > 10) newPosition[2] = -10;
-            } else if (direction === -Math.PI/2) { // Moving down
-              newPosition[2] -= car.speed * simulationSpeed;
-              if (newPosition[2] < -10) newPosition[2] = 10;
+            // Check if intersection center is occupied by another car
+            const isIntersectionOccupied = prevCars.some((otherCar, otherIndex) => 
+              otherIndex !== carIndex && 
+              Math.abs(otherCar.position[0]) <= 1.5 && 
+              Math.abs(otherCar.position[2]) <= 1.5
+            );
+            
+            // Get traffic light state for this car's direction
+            const getTrafficLightState = (carDirection) => {
+              if (carDirection === 0) return trafficLights[1]?.state || 'red'; // East
+              if (carDirection === Math.PI/2) return trafficLights[0]?.state || 'red'; // North  
+              if (carDirection === -Math.PI/2) return trafficLights[2]?.state || 'red'; // South
+              return trafficLights[3]?.state || 'red'; // West
+            };
+            
+            const lightState = getTrafficLightState(direction);
+            
+            // Fuzzy logic rules for priority-based stopping decisions
+            const shouldStopAtLight = (priority, lightState, isOccupied) => {
+              // Emergency vehicles (priority 2): Can override red lights but respect occupancy
+              if (priority === 2) {
+                return isOccupied; // Only stop if intersection is physically occupied
+              }
+              
+              // Public transport (priority 1): Can proceed on yellow, stop on red
+              if (priority === 1) {
+                return lightState === 'red' || isOccupied;
+              }
+              
+              // Regular vehicles (priority 0): Must stop on red/yellow
+              return (lightState === 'red' || lightState === 'yellow') || isOccupied;
+            };
+            
+            const mustStop = shouldStopAtLight(car.priority, lightState, isIntersectionOccupied);
+            
+            // Movement logic with priority-based fuzzy rules
+            if (direction === 0) { // Moving right (East)
+              const nextX = newPosition[0] + car.speed * simulationSpeed;
+              
+              if (mustStop && newPosition[0] < -1.5 && nextX >= -1.5) {
+                // Stop position varies by priority
+                if (car.priority === 2) {
+                  newPosition[0] = -1.8; // Emergency: closer to intersection
+                } else if (car.priority === 1) {
+                  newPosition[0] = -2.2; // Public transport: moderate distance
+                } else {
+                  newPosition[0] = -2.5; // Regular: further back
+                }
+              } else {
+                newPosition[0] = nextX;
+                if (newPosition[0] > 10) newPosition[0] = -10;
+              }
+            } else if (direction === Math.PI/2) { // Moving up (North)
+              const nextZ = newPosition[2] + car.speed * simulationSpeed;
+              
+              if (mustStop && newPosition[2] < -1.5 && nextZ >= -1.5) {
+                if (car.priority === 2) {
+                  newPosition[2] = -1.8;
+                } else if (car.priority === 1) {
+                  newPosition[2] = -2.2;
+                } else {
+                  newPosition[2] = -2.5;
+                }
+              } else {
+                newPosition[2] = nextZ;
+                if (newPosition[2] > 10) newPosition[2] = -10;
+              }
+            } else if (direction === -Math.PI/2) { // Moving down (South)
+              const nextZ = newPosition[2] - car.speed * simulationSpeed;
+              
+              if (mustStop && newPosition[2] > 1.5 && nextZ <= 1.5) {
+                if (car.priority === 2) {
+                  newPosition[2] = 1.8;
+                } else if (car.priority === 1) {
+                  newPosition[2] = 2.2;
+                } else {
+                  newPosition[2] = 2.5;
+                }
+              } else {
+                newPosition[2] = nextZ;
+                if (newPosition[2] < -10) newPosition[2] = 10;
+              }
             }
             
             return { ...car, position: newPosition };
@@ -238,10 +312,10 @@ const Simulation = () => {
     setIsRunning(false);
     setSimulationTime(0);
     setCars([
-      { position: [-5, 0, 0], color: 'red', rotation: 0, speed: 0.1 },
-      { position: [3, 0, 0.5], color: 'blue', rotation: 0, speed: 0.08 },
-      { position: [0, 0, -4], color: 'green', rotation: Math.PI/2, speed: 0.12 },
-      { position: [0.5, 0, 6], color: 'yellow', rotation: -Math.PI/2, speed: 0.09 }
+      { position: [-5, 0, 0], priority: 2, rotation: 0, speed: 0.1 },
+      { position: [3, 0, 0.5], priority: 1, rotation: 0, speed: 0.08 },
+      { position: [0, 0, -4], priority: 0, rotation: Math.PI/2, speed: 0.12 },
+      { position: [0.5, 0, 6], priority: 0, rotation: -Math.PI/2, speed: 0.09 }
     ]);
     setCurrentSimulationId(null);
   };
@@ -281,7 +355,33 @@ const Simulation = () => {
     if (!currentSimulationId) return;
     try {
       await trafficApi.simulation.stop(currentSimulationId);
-      toast.success('Simulation stopped');
+      
+      // Save simulation results to localStorage for Analytics
+      const simulationResult = {
+        id: currentSimulationId,
+        controllerType: scenario,
+        controllerName: controllerTypes[scenario].name,
+        duration: simulationTime,
+        finalMetrics: metrics,
+        timestamp: new Date().toISOString(),
+        avgWaitTime: metrics.avgWaitTime,
+        throughput: metrics.throughput,
+        emissions: metrics.emissions,
+        efficiency: metrics.efficiency
+      };
+      
+      // Get existing results and add new one
+      const existingResults = JSON.parse(localStorage.getItem('simulationResults') || '[]');
+      existingResults.push(simulationResult);
+      
+      // Keep only last 20 results
+      if (existingResults.length > 20) {
+        existingResults.splice(0, existingResults.length - 20);
+      }
+      
+      localStorage.setItem('simulationResults', JSON.stringify(existingResults));
+      
+      toast.success('Simulation stopped and results saved');
     } catch (e) {
       console.error('Failed to stop simulation', e);
       toast.error('Failed to stop backend simulation');
@@ -380,16 +480,6 @@ const Simulation = () => {
                 </Select>
               </FormControl>
 
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={smartMode}
-                    onChange={(e) => setSmartMode(e.target.checked)}
-                  />
-                }
-                label="Smart Mode"
-                sx={{ mt: 2 }}
-              />
             </Paper>
 
             {/* Real-time Metrics */}
@@ -455,7 +545,6 @@ const Simulation = () => {
                   cars={cars}
                   trafficLights={trafficLights}
                   isRunning={isRunning}
-                  settings={{ smartMode, carDensity, simulationSpeed }}
                 />
               </Canvas>
               
